@@ -29,10 +29,15 @@ if (Test-Path $KeyPath) {
     ssh-keygen -t ed25519 -f $KeyPath -C "dotnet10-dev-container" -N '""'
 }
 
-Copy-Item -Path "$KeyPath.pub" -Destination (Join-Path $scriptDir "authorized_keys") -Force
+$authorizedKeys = Join-Path $scriptDir "authorized_keys"
+
+# Write with LF endings: this file is consumed by sshd inside the Linux
+# container, and a plain Copy-Item would carry Windows CRLFs into the image.
+$publicKey = (Get-Content -Path "$KeyPath.pub" -Raw).Replace("`r`n", "`n").TrimEnd("`n") + "`n"
+[System.IO.File]::WriteAllText($authorizedKeys, $publicKey, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host ""
-Write-Host "Public key written to: $(Join-Path $scriptDir 'authorized_keys')"
+Write-Host "Public key written to: $authorizedKeys"
 Write-Host "Private key stays at:  $KeyPath"
 Write-Host ""
 Write-Host "Next: docker build -t dotnet10-dev-container ."

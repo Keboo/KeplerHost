@@ -20,6 +20,12 @@ key-only auth.
 - `up.ps1` — builds the image and starts the container, publishing SSH on
   `localhost:2222`.
 - `down.ps1` — stops and removes the container.
+- `azure-up.ps1` — builds the *same* Dockerfile in Azure Container Registry
+  and runs it as an Azure Container Instance (cloud agent host).
+- `azure-down.ps1` — deletes the container instance (optionally the
+  registry / whole resource group).
+- `azure-common.ps1` — shared helpers for the two Azure scripts; not meant
+  to be run directly.
 
 All host-side scripts are PowerShell Core (`pwsh`) — install it if you
 don't have it (`winget install Microsoft.PowerShell` / `brew install
@@ -59,6 +65,80 @@ powershell` / etc.).
    ./down.ps1
    ```
 
+## Running it in Azure (cloud agent host)
+
+Same image, same dependencies — just hosted in
+[Azure Container Instances](https://learn.microsoft.com/azure/container-instances/)
+instead of on your machine. Requires the
+[Azure CLI](https://aka.ms/azure-cli) and `az login`.
+
+```powershell
+./generate-keys.ps1     # if you haven't already
+./azure-up.ps1
+```
+
+`azure-up.ps1` will:
+
+1. create the resource group (default `dotnet10-dev-rg`, region `eastus`),
+2. create an Azure Container Registry with the admin user enabled (ACI
+   pulls with a username/password),
+3. run `az acr build` on this folder — the build happens in Azure but uses
+   the exact same `Dockerfile`, so the container instance gets the identical
+   dotnet 10 SDK / git / node / sshd setup as the local one,
+4. create a container instance with a public IP, a DNS label, and port 22
+   open.
+
+Steps 3 and 4 are skipped when there's nothing to do. The image is tagged with
+a hash of the build inputs — the `Dockerfile` plus every file it `COPY`s
+(`authorized_keys`, `entrypoint.sh`) — so re-running `azure-up.ps1` with no
+edits finds that tag already in the registry and skips the build entirely.
+Editing the README or one of the `.ps1` scripts doesn't affect the image, so it
+doesn't trigger a rebuild. Likewise, if the container instance is already
+running that exact image, it's left alone instead of being deleted and
+recreated (which would change the public IP). Use `-ForceBuild` to rebuild and
+redeploy regardless.
+
+When it finishes it prints the FQDN and the SSH command:
+
+```bash
+ssh -i ~/.ssh/id_dotnet10dev_ed25519 dev@<container>.<region>.azurecontainer.io
+```
+
+You can also get a shell without SSH at all, per
+[the ACI exec docs](https://learn.microsoft.com/azure/container-instances/container-instances-exec):
+
+```powershell
+az container exec --resource-group dotnet10-dev-rg --name dotnet10-dev --exec-command "/bin/bash"
+```
+
+Note that `az container exec` can only launch a single process and can't take
+command arguments — it's for interactive debugging, not scripting. Use SSH
+for real work.
+
+**Tear down** (do this when you're done — ACI bills per second while the
+container group exists):
+
+```powershell
+./azure-down.ps1                        # delete just the container instance
+./azure-down.ps1 -IncludeRegistry       # also delete the ACR
+./azure-down.ps1 -DeleteResourceGroup   # delete everything, prompts first
+```
+
+Keeping the registry between runs makes the next `azure-up.ps1` faster
+(layer cache) but costs a few dollars a month for a Basic ACR.
+
+Useful knobs:
+
+```powershell
+./azure-up.ps1 -ResourceGroup my-agents -Location westus2 -Cpu 4 -Memory 8
+./azure-up.ps1 -ContainerName agent-2 -DnsLabel my-unique-label
+./azure-up.ps1 -ForceBuild                # rebuild + redeploy even if unchanged
+```
+
+The registry name and DNS label default to values derived from the resource
+group name, so `azure-up.ps1` and `azure-down.ps1` agree on them without you
+having to pass anything. If you override one, pass the same value to both.
+
 ## Notes / things you may want to adjust
 
 - `PasswordAuthentication` is disabled in `sshd_config` — key-only login,
@@ -68,5 +148,10 @@ powershell` / etc.).
   default (22).
 - `authorized_keys` is gitignored — don't commit it or the private key if
   this folder ever becomes a git repo.
+- The Azure container instance exposes port 22 to the public internet.
+  That's only key-only SSH, but if you want it locked down further, drop
+  `--ip-address Public` / `--dns-name-label` from `azure-up.ps1`, deploy
+  into a VNet, and reach it over `az container exec` or a private endpoint.
 - If you're running Docker Desktop on a remote/VM host rather than
   locally, swap `localhost` for that host's address in the SSH command.
+

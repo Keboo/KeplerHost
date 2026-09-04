@@ -1,0 +1,6 @@
+# Shell scripts run inside the Linux container. A CRLF shebang makes the kernel
+# look for an interpreter literally named "/bin/bash\r", so these must stay LF
+# no matter what core.autocrlf is set to on the machine doing the checkout.
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+Dockerfile text eol=lf

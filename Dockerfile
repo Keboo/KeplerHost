@@ -28,13 +28,17 @@ RUN mkdir -p /var/run/sshd \
     && chmod 700 /home/${USERNAME}/.ssh
 
 COPY authorized_keys /home/${USERNAME}/.ssh/authorized_keys
-RUN chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.ssh \
+RUN sed -i 's/\r$//' /home/${USERNAME}/.ssh/authorized_keys \
+    && chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.ssh \
     && chmod 600 /home/${USERNAME}/.ssh/authorized_keys \
     && sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
     && sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Belt and braces: a CRLF checkout on Windows would otherwise leave the shebang
+# pointing at "/bin/bash\r" and the container would crash-loop on start.
+RUN sed -i 's/\r$//' /entrypoint.sh \
+    && chmod +x /entrypoint.sh
 
 EXPOSE 22
 ENTRYPOINT ["/entrypoint.sh"]
