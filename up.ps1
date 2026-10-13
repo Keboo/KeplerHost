@@ -21,11 +21,29 @@ if (-not (Test-Path (Join-Path $scriptDir "authorized_keys"))) {
 }
 
 docker build -t $ImageName $scriptDir
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker image build failed; the existing container was not changed."
+}
 
-docker rm -f $ContainerName 2>$null | Out-Null
+$existingContainer = docker container ls -a --filter "name=^/${ContainerName}$" --format '{{.Names}}'
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to check for the existing container."
+}
+if ($existingContainer -contains $ContainerName) {
+    docker rm -f $ContainerName | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to remove container '$ContainerName'."
+    }
+}
 
-docker run -d --name $ContainerName -p "${SshPort}:22" $ImageName
+$hostKeyVolume = "${ContainerName}-ssh-host-keys"
+docker run -d --name $ContainerName -p "${SshPort}:22" `
+    --mount "type=volume,source=$hostKeyVolume,target=/var/lib/ssh-host-keys" $ImageName
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to start container '$ContainerName'."
+}
 
 Write-Host ""
 Write-Host "Container '$ContainerName' is up."
+Write-Host "SSH host keys are retained in Docker volume '$hostKeyVolume'."
 Write-Host "Connect with: ssh -i ~/.ssh/id_dotnet10dev_ed25519 -p $SshPort dev@localhost"

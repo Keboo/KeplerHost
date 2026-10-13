@@ -9,7 +9,7 @@ key-only auth.
   Node.js/npm (via NodeSource), an `openssh-server`, and a non-root `dev`
   user with passwordless sudo.
 - `entrypoint.sh` — runs **inside the Linux container** at startup
-  (generates SSH host keys on first boot, then execs `sshd`). Left as
+  (generates any missing SSH host keys, then execs `sshd`). Left as
   bash intentionally — it's container-internal, not something you run
   yourself, and bash is guaranteed present in the base image while
   PowerShell is not.
@@ -18,8 +18,9 @@ key-only auth.
   half into this folder as `authorized_keys`, which the Dockerfile bakes
   into the image.
 - `up.ps1` — builds the image and starts the container, publishing SSH on
-  `localhost:2222`.
-- `down.ps1` — stops and removes the container.
+  `localhost:2222`. A per-container Docker volume retains SSH host keys
+  across rebuilds and recreation.
+- `down.ps1` — stops and removes the container, retaining its host-key volume.
 - `azure-up.ps1` — builds the *same* Dockerfile in Azure Container Registry
   and runs it as an Azure Container Instance (cloud agent host).
 - `azure-down.ps1` — deletes the container instance (optionally the
@@ -39,6 +40,11 @@ powershell` / etc.).
    ./generate-keys.ps1
    ```
    This never sets a password — auth is key-only.
+   Older versions of this script could accidentally set the key passphrase
+   to two double-quote characters (`""`) on modern PowerShell. Existing keys
+   are not overwritten. If affected, use `ssh-keygen -p -f
+   "$HOME\.ssh\id_dotnet10dev_ed25519"`, enter those two characters as the old
+   passphrase, and leave the new passphrase empty.
 
 2. **Build and start the container**:
    ```powershell
@@ -64,6 +70,82 @@ powershell` / etc.).
    ```powershell
    ./down.ps1
    ```
+
+## Local container identities
+
+`up.ps1` mounts the named Docker volume `<ContainerName>-ssh-host-keys`.
+Re-running it or running `down.ps1` followed by `up.ps1` retains the same
+SSH server identity, without disabling SSH host-key verification. Keep the
+same container name and SSH port when reconnecting.
+
+For multiple local containers, use a different name and port for each:
+
+```powershell
+./up.ps1 -ContainerName agent-1 -SshPort 2223
+./up.ps1 -ContainerName agent-2 -SshPort 2224
+./down.ps1 -ContainerName agent-1
+```
+
+### Updating your SSH `known_hosts`
+
+SSH saves the **server's identity** in `$HOME\.ssh\known_hosts`. This is
+separate from your login key (`id_dotnet10dev_ed25519`) and the container's
+`authorized_keys`. A `REMOTE HOST IDENTIFICATION HAS CHANGED!` warning
+means the saved server identity does not match; it does not mean you
+selected the wrong login key.
+
+An update is expected when migrating an existing container to this
+volume-based setup, deliberately replacing or deleting its host-key volume,
+or reusing the same host and port for a different container. Normal
+rebuilds and `down.ps1` / `up.ps1` cycles with the same retained volume
+should **not** require an update. Older images without the persistent-key
+entrypoint can change identity every time they are recreated; rebuild
+with the updated `up.ps1` to migrate them.
+
+Do not remove a trust entry just because SSH reports a warning. First
+verify the new identity through a trusted channel. For your own local
+Docker container, read its ED25519 fingerprint directly:
+
+```powershell
+docker exec dotnet10-dev ssh-keygen -lf /var/lib/ssh-host-keys/etc/ssh/ssh_host_ed25519_key.pub
+```
+
+If the container is still running an older image, its keys are instead
+under `/etc/ssh`:
+
+```powershell
+docker exec dotnet10-dev ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+Compare that fingerprint with the ED25519 fingerprint in the SSH warning.
+If they match and the identity change is expected, remove only the stale
+entry and reconnect:
+
+```powershell
+ssh-keygen -R "[localhost]:2222"
+ssh -i "$HOME\.ssh\id_dotnet10dev_ed25519" -p 2222 dev@localhost
+```
+
+Accept the new fingerprint only if it matches the verified one printed by
+`docker exec`. SSH then saves it for subsequent connections. `ssh-keygen -R`
+keeps the previous file as `known_hosts.old`; it does not clear unrelated
+hosts. If you use a custom trust file, pass `-f <path>` to `ssh-keygen` and
+`-o UserKnownHostsFile=<path>` to `ssh`.
+
+Substitute your container name, connection hostname, and port if customized
+(for example, `[localhost]:2223` or `[127.0.0.1]:2222`). On the default SSH
+port 22, use the hostname alone rather than `[hostname]:port`. Do not
+disable host-key checking or delete the whole `known_hosts` file. If the
+fingerprints differ or the change is unexplained, stop and investigate.
+
+To intentionally discard a server identity, remove its volume after
+stopping the container (for example, `docker volume rm
+dotnet10-dev-ssh-host-keys`). Its next start generates new keys and
+requires verifying the new fingerprint again. Volume pruning can also
+discard keys for stopped containers.
+
+Azure starts still use ephemeral host keys unless a persistent volume is
+mounted at `/var/lib/ssh-host-keys`.
 
 ## Running it in Azure (cloud agent host)
 
@@ -154,4 +236,3 @@ having to pass anything. If you override one, pass the same value to both.
   into a VNet, and reach it over `az container exec` or a private endpoint.
 - If you're running Docker Desktop on a remote/VM host rather than
   locally, swap `localhost` for that host's address in the SSH command.
-
