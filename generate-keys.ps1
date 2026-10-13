@@ -26,7 +26,14 @@ if (Test-Path $KeyPath) {
     if (-not (Test-Path $keyDir)) {
         New-Item -ItemType Directory -Path $keyDir -Force | Out-Null
     }
-    ssh-keygen -t ed25519 -f $KeyPath -C "dotnet10-dev-container" -N '""'
+    # Legacy PowerShell drops empty native arguments; modern argument passing
+    # preserves them and would treat '""' as a literal two-character passphrase.
+    $argumentPassing = Get-Variable PSNativeCommandArgumentPassing -ErrorAction SilentlyContinue
+    $emptyPassphrase = if ($argumentPassing -and $argumentPassing.Value -ne "Legacy") { "" } else { '""' }
+    ssh-keygen -t ed25519 -f $KeyPath -C "dotnet10-dev-container" -N $emptyPassphrase
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to generate SSH key at '$KeyPath'."
+    }
 }
 
 $authorizedKeys = Join-Path $scriptDir "authorized_keys"
